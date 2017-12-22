@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <declare-styleable name="RadClock">
+        <attr name="clockBackground" format="color"/>
+        <attr name="clockForeground" format="color"/>
+        <attr name="tickColor" format="color"/>
+        <attr name="tickNumColor" format="color"/>
+        <attr name="centerTimeColor" format="color"/>
+    </declare-styleable>
+</resources>
