@@ -1,13 +1,15 @@
 package nishkyu.radclock
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
-import android.widget.TextView
-import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.collections.ArrayList
 
 const val MAX_TICKS = 12
 const val TICK_DEGREES = 30.0
@@ -17,38 +19,31 @@ const val TICK_LENGTH = 20
  * A Radial Clock with two controls. The two controls can represent start and end times. The
  * controls can be moved around the clock like a rotary dial.
  */
-class RadClock(context: Context?, attributeSet: AttributeSet? = null) : View(context, attributeSet) {
+class RadClock(context: Context?, attributeSet: AttributeSet? = null) : View(context, attributeSet), ValueAnimator.AnimatorUpdateListener {
     val mContext = context
     val mAttrs = attributeSet
 
+    private lateinit var mBackground: ClockCircle
+    private lateinit var mForeground: ClockCircle
+    private lateinit var mTicks: Ticks
+    private var mNumbers : Numbers
+    private var mCenterTime: CenterTime
+    private var mStart: Dial
+    private var mLetterS: ControlText = ControlText()
+    private var mLetterE: ControlText = ControlText()
+
     // layout and sizing
-    private var mBackgroundDiameter: Float = 0f
-    private var mForegroundRadius: Float = 0f
     private var mCircleCenterX: Float = 0f
     private var mCircleCenterY: Float = 0f
-    private var mTickStartX: Float = 0f
-    private var mTickStartY: Float = 0f
-    private var mTickPositions: ArrayList<TickPos> = ArrayList(MAX_TICKS)
-    private var mTickNumPositions: ArrayList<TickNumPos> = ArrayList(MAX_TICKS)
-    private var mCenterTextY = 0f
-
-    // paint objects
-    private val mClockFGPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val mClockBGPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val mTickPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val mTickNumPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val mClockCenterTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var mControlRadius: Float = 0f
 
     // colors
-    var mClockBackground: Int = Color.parseColor("#7E7E7E")
-        set(value) {
-            field = value
-            invalidate()
-        }
-    var mClockForeground = Color.parseColor("#000000")
+    var mBackgroundColor = Color.parseColor("#7E7E7E")
+    var mForegroundColor = Color.parseColor("#000000")
     var mTickColor = Color.parseColor("#FFFFFF")
-    var mTickNumColor = Color.parseColor("#FFFFFF")
+    var mNumberColor = Color.parseColor("#FFFFFF")
     var mCenterTimeColor = Color.parseColor("#FFFFFF")
+    var mStartColor = Color.parseColor("#1F9ED9")
 
     // logical properties
     var mStartTime: Calendar = GregorianCalendar.getInstance()
@@ -56,44 +51,69 @@ class RadClock(context: Context?, attributeSet: AttributeSet? = null) : View(con
     var mSelectedTime: Calendar = GregorianCalendar.getInstance()
     var mStartTimeString: String = ""
 
+    // touch
+    private var mPreviousX = 0f
+    private var mPreviousY = 0f
+    private val mDetector = GestureDetector(this.mContext, SimpleGestureListener())
+
+    // animation
+    private var mStartAnimator = ValueAnimator()
+
+    private enum class Quadrant {Q1, Q2, Q3, Q4}
+
     init {
         val typedArray = mContext?.theme?.obtainStyledAttributes(mAttrs, R.styleable.RadClock, 0, 0)
         try {
-            mClockBackground = typedArray!!.getInt(R.styleable.RadClock_clockBackground, Color.parseColor("#7E7E7E"))
-            mClockForeground = typedArray.getInt(R.styleable.RadClock_clockForeground, Color.parseColor("#000000"))
+            mBackgroundColor = typedArray!!.getInt(R.styleable.RadClock_clockBackground, Color.parseColor("#7E7E7E"))
+            mForegroundColor = typedArray.getInt(R.styleable.RadClock_clockForeground, Color.parseColor("#000000"))
             mTickColor = typedArray.getInt(R.styleable.RadClock_tickColor, Color.parseColor("#FFFFFF"))
-            mTickNumColor = typedArray.getInt(R.styleable.RadClock_tickNumColor, Color.parseColor("#FFFFFF"))
+            mNumberColor = typedArray.getInt(R.styleable.RadClock_tickNumColor, Color.parseColor("#FFFFFF"))
             mCenterTimeColor = typedArray.getInt(R.styleable.RadClock_centerTimeColor, Color.parseColor("#FFFFFF"))
         } catch (rte: RuntimeException) {
             typedArray!!.recycle()
         }
 
-        mClockFGPaint.style = Paint.Style.FILL
-        mClockFGPaint.color = mClockForeground
-        mClockBGPaint.style = Paint.Style.FILL
-        mClockBGPaint.color = mClockBackground
 
-        mTickPaint.style = Paint.Style.FILL
-        mTickPaint.color = mTickColor
-        mTickPaint.strokeWidth = 5f
+        val centerTimePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        centerTimePaint.style = Paint.Style.FILL
+        centerTimePaint.color = mCenterTimeColor
+        centerTimePaint.textSize = 22f * resources.displayMetrics.density
+        centerTimePaint.textAlign = Paint.Align.CENTER
+        centerTimePaint.isAntiAlias = true
+        centerTimePaint.typeface = Typeface.DEFAULT
+        mCenterTime = CenterTime(centerTimePaint)
 
-        mTickNumPaint.style = Paint.Style.FILL
-        mTickNumPaint.color = mTickNumColor
-        mTickNumPaint.textSize = 16f * resources.displayMetrics.density
-        mTickNumPaint.textAlign = Paint.Align.CENTER
-        mTickNumPaint.isAntiAlias = true
-        mTickNumPaint.typeface = Typeface.DEFAULT
+        val numbersPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        numbersPaint.style = Paint.Style.FILL
+        numbersPaint.color = mNumberColor
+        numbersPaint.textSize = 18f * resources.displayMetrics.density
+        numbersPaint.textAlign = Paint.Align.CENTER
+        numbersPaint.isAntiAlias = true
+        numbersPaint.typeface = Typeface.DEFAULT
+        mNumbers = Numbers(numbersPaint)
 
-        mClockCenterTextPaint.style = Paint.Style.FILL
-        mClockCenterTextPaint.color = mCenterTimeColor
-        mClockCenterTextPaint.textSize = 22f * resources.displayMetrics.density
-        mClockCenterTextPaint.textAlign = Paint.Align.CENTER
-        mClockCenterTextPaint.isAntiAlias = true
-        mClockCenterTextPaint.typeface = Typeface.DEFAULT
-
-        val simpleDateFormat = SimpleDateFormat("HH:mm")
+        val simpleDateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
         simpleDateFormat.calendar = mStartTime
         mStartTimeString = simpleDateFormat.format(mStartTime.time)
+
+        val startPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        startPaint.style = Paint.Style.FILL
+        startPaint.color = mStartColor
+        mStart = Dial(startPaint)
+
+        mLetterS.text = "S"
+        mLetterS.paint.style = Paint.Style.FILL
+        mLetterS.paint.color = Color.WHITE
+        mLetterS.paint.textAlign = Paint.Align.CENTER
+
+        mLetterE.text = "E"
+        mLetterE.paint.style = Paint.Style.FILL
+        mLetterE.paint.color = Color.WHITE
+        mLetterE.paint.textAlign = Paint.Align.CENTER
+
+        mStartAnimator = ValueAnimator.ofFloat(0f, TICK_DEGREES.toFloat())
+        mStartAnimator.duration = 10
+        mStartAnimator.addUpdateListener(this)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -106,17 +126,18 @@ class RadClock(context: Context?, attributeSet: AttributeSet? = null) : View(con
         val drawWidth = (w - xpad).toFloat()
         val drawHeight = (h - ypad).toFloat()
 
-        // maximum diameter of the clock background, foreground,
-        mBackgroundDiameter = Math.min(drawWidth, drawHeight)
-        mForegroundRadius = mBackgroundDiameter / 3
+        // maximum diameter of the clock background, foreground
+        mBackground = ClockCircle(Math.min(drawWidth, drawHeight), mBackgroundColor)
+        mForeground = ClockCircle((mBackground.diameter / 3) * 2, mForegroundColor)
 
         // calculate offset for circle center draw position
         mCircleCenterX = (w / 2).toFloat()
         mCircleCenterY = (h / 2).toFloat()
 
         // pre-calculate the tick positions for performance
+        mTicks = Ticks(mTickColor)
         val TICK_PADDING = 10f
-        var radius = mForegroundRadius - TICK_PADDING
+        var radius = mForeground.radius - TICK_PADDING
         var tick = 0
         while (tick < MAX_TICKS) {
             val tickX = mCircleCenterX + radius * Math.sin(Math.toRadians(TICK_DEGREES) * tick).toFloat()
@@ -124,73 +145,247 @@ class RadClock(context: Context?, attributeSet: AttributeSet? = null) : View(con
 
             // customize each tick drawing: diagonal, horizontal, vertical
             when (tick) {
-                0 -> mTickPositions.add(TickPos(tickX, tickY, tickX, tickY + TICK_LENGTH))
-                1 -> mTickPositions.add(TickPos(tickX, tickY, tickX - TICK_LENGTH / 2, tickY + TICK_LENGTH))
-                2 -> mTickPositions.add(TickPos(tickX, tickY, tickX - TICK_LENGTH, tickY + TICK_LENGTH / 2))
-                3 -> mTickPositions.add(TickPos(tickX, tickY, tickX - TICK_LENGTH, tickY))
-                4 -> mTickPositions.add(TickPos(tickX, tickY, tickX - TICK_LENGTH, tickY - TICK_LENGTH / 2))
-                5 -> mTickPositions.add(TickPos(tickX, tickY, tickX - TICK_LENGTH / 2, tickY - TICK_LENGTH))
-                6 -> mTickPositions.add(TickPos(tickX, tickY, tickX, tickY - TICK_LENGTH))
-                7 -> mTickPositions.add(TickPos(tickX, tickY, tickX + TICK_LENGTH / 2, tickY - TICK_LENGTH))
-                8 -> mTickPositions.add(TickPos(tickX, tickY, tickX + TICK_LENGTH , tickY - TICK_LENGTH / 2))
-                9 -> mTickPositions.add(TickPos(tickX, tickY, tickX + TICK_LENGTH, tickY))
-                10 -> mTickPositions.add(TickPos(tickX, tickY, tickX + TICK_LENGTH, tickY + TICK_LENGTH / 2))
-                11 -> mTickPositions.add(TickPos(tickX, tickY, tickX + TICK_LENGTH / 2, tickY + TICK_LENGTH))
+                0 -> mTicks.add(Tick(tickX, tickY, tickX, tickY + TICK_LENGTH))
+                1 -> mTicks.add(Tick(tickX, tickY, tickX - TICK_LENGTH / 2, tickY + TICK_LENGTH))
+                2 -> mTicks.add(Tick(tickX, tickY, tickX - TICK_LENGTH, tickY + TICK_LENGTH / 2))
+                3 -> mTicks.add(Tick(tickX, tickY, tickX - TICK_LENGTH, tickY))
+                4 -> mTicks.add(Tick(tickX, tickY, tickX - TICK_LENGTH, tickY - TICK_LENGTH / 2))
+                5 -> mTicks.add(Tick(tickX, tickY, tickX - TICK_LENGTH / 2, tickY - TICK_LENGTH))
+                6 -> mTicks.add(Tick(tickX, tickY, tickX, tickY - TICK_LENGTH))
+                7 -> mTicks.add(Tick(tickX, tickY, tickX + TICK_LENGTH / 2, tickY - TICK_LENGTH))
+                8 -> mTicks.add(Tick(tickX, tickY, tickX + TICK_LENGTH , tickY - TICK_LENGTH / 2))
+                9 -> mTicks.add(Tick(tickX, tickY, tickX + TICK_LENGTH, tickY))
+                10 -> mTicks.add(Tick(tickX, tickY, tickX + TICK_LENGTH, tickY + TICK_LENGTH / 2))
+                11 -> mTicks.add(Tick(tickX, tickY, tickX + TICK_LENGTH / 2, tickY + TICK_LENGTH))
             }
             ++tick
         }
 
         // pre-calculate the tick number positions for performance
         tick = 1
-        radius = mForegroundRadius - (TICK_PADDING * 2 + TICK_LENGTH * 2) - 10
+        radius = mForeground.radius - (TICK_PADDING * 2 + TICK_LENGTH * 2) - 20
         while (tick <= MAX_TICKS) {
             val tickX = mCircleCenterX + radius * Math.sin(Math.toRadians(TICK_DEGREES) * tick).toFloat()
             var tickY = mCircleCenterY - radius * Math.cos(Math.toRadians(TICK_DEGREES) * tick).toFloat()
 
             // text is drawn on the baseline, so numbers 3 - 9 have to be adjusted in height
             val textBounds = Rect()
-            mTickNumPaint.getTextBounds(tick.toString(), 0, tick.toString().length, textBounds)
+            mNumbers.paint.getTextBounds(tick.toString(), 0, tick.toString().length, textBounds)
             if (tick == 3 || tick == 9) tickY += textBounds.height() / 2
             if (tick in 4.0..8.0) tickY += textBounds.height()
-            mTickNumPositions.add(TickNumPos(tick.toString(), tickX, tickY))
+            mNumbers.add(Number(tick.toString(), tickX, tickY))
             ++tick
         }
 
         // y-position of the center time text
         val centerTextRect = Rect()
-        mClockCenterTextPaint.getTextBounds(mStartTimeString, 0, mStartTimeString.length, centerTextRect)
-        mCenterTextY = mCircleCenterY + centerTextRect.height() / 2
+        mCenterTime.paint.getTextBounds(mStartTimeString, 0, mStartTimeString.length, centerTextRect)
+        mCenterTime.centerTime = mStartTimeString
+        mCenterTime.y = mCircleCenterY + centerTextRect.height() / 2
+        mCenterTime.x = mCircleCenterX
+
+        // non-visible control radius. The circle on which the controls turn
+        mControlRadius = mForeground.radius + (mBackground.radius - mForeground.radius)  / 2
+
+        // start control calculations
+        mStart.diameter = mBackground.radius - mForeground.radius
+        mStart.radius = mStart.diameter / 2
+        mStart.x = mCircleCenterX + mControlRadius * Math.sin(Math.toRadians(mStart.degree)).toFloat()
+        mStart.y = mCircleCenterY - mControlRadius * Math.cos(Math.toRadians(mStart.degree)).toFloat()
+
+        // calculate size and position of start control symbol
+        mLetterS.paint.textSize = 22f * resources.displayMetrics.density
+        mLetterS.paint.getTextBounds("S", 0, 1, mLetterS.textRect)
+        mLetterS.x = mStart.x
+        mLetterS.y = mStart.y
     }
 
     override fun onDraw(canvas: Canvas?) {
         super.onDraw(canvas)
 
         // draw the clock background
-        canvas!!.drawCircle(mCircleCenterX, mCircleCenterY, mBackgroundDiameter / 2f, mClockBGPaint)
+        canvas!!.drawCircle(mCircleCenterX, mCircleCenterY, mBackground.diameter / 2f, mBackground.paint)
 
         // draw the clock foreground
-        canvas.drawCircle(mCircleCenterX, mCircleCenterY, mForegroundRadius, mClockFGPaint)
+        canvas.drawCircle(mCircleCenterX, mCircleCenterY, mForeground.radius, mForeground.paint)
 
         // draw ticks
-        for (tickPos in mTickPositions)
-            canvas.drawLine(tickPos.startX, tickPos.startY, tickPos.endX, tickPos.endY, mTickPaint)
+        for (tick in mTicks)
+            canvas.drawLine(tick.sx, tick.sy, tick.ex, tick.ey, mTicks.paint)
 
-        for (tickNumPos in mTickNumPositions)
-            canvas.drawText(tickNumPos.text, tickNumPos.startX, tickNumPos.startY, mTickNumPaint)
+        // draw numbers
+        for (number in mNumbers)
+            canvas.drawText(number.num, number.sx, number.sy, mNumbers.paint)
 
-        canvas.drawText(mStartTimeString, mCircleCenterX, mCenterTextY, mClockCenterTextPaint)
+        // draw center text
+        canvas.drawText(mCenterTime.centerTime, mCenterTime.x, mCenterTime.y, mCenterTime.paint)
+
+        // draw start control
+        canvas.drawCircle(mStart.x, mStart.y, mStart.radius, mStart.paint)
+        canvas.drawText(mLetterS.text, mLetterS.x, mLetterS.y, mLetterS.paint)
     }
 
-    private class TickPos(sx: Float, sy: Float, ex: Float, ey: Float) {
-        var startX = sx
-        var startY = sy
-        var endX = ex
-        var endY = ey
+    override fun onTouchEvent(event: MotionEvent?): Boolean {
+        val result = mDetector.onTouchEvent(event)
+        var x = event!!.getX()
+        var y = event.getY()
+
+        if (!result) {
+            when (event!!.action) {
+                MotionEvent.ACTION_MOVE -> handleMove(x, y, event)
+            }
+        }
+        mPreviousX = x
+        mPreviousY = y;
+        return true
     }
 
-    private class TickNumPos(num: String, sx: Float, sy: Float) {
-        var text = num
-        var startX = sx
-        var startY = sy
+    private fun handleMove(x: Float, y: Float, event: MotionEvent?) {
+        val control = withinControl(x, y)
+        if (control != null) {
+            val dx = x - mPreviousX
+            val dy = y - mPreviousY
+
+            if (dx > 0 || dy > 0) {
+                if (!mStartAnimator.isRunning)
+                    mStartAnimator.start()
+            }
+        }
+    }
+
+    override fun onAnimationUpdate(animator: ValueAnimator?) {
+        val animatedValue = animator!!.getAnimatedValue() as Float
+        mStart.degree += animatedValue
+        mStart.x = mCircleCenterX + mControlRadius * Math.sin(Math.toRadians(mStart.degree)).toFloat()
+        mStart.y = mCircleCenterY - mControlRadius * Math.cos(Math.toRadians(mStart.degree)).toFloat()
+        mLetterS.x = mStart.x
+        mLetterS.y = mStart.y
+        invalidate()
+    }
+
+    // returns the control if user is within control using touch
+    private fun withinControl(x: Float, y: Float): Dial? {
+        val boxStart = RectF()
+        boxStart.left = mStart.x - mStart.radius
+        boxStart.right = boxStart.left + mStart.diameter
+        boxStart.top = mStart.y - mStart.radius
+        boxStart.bottom = boxStart.top + mStart.diameter
+
+        if (boxStart.contains(x, y))
+            return mStart
+
+        return null
+    }
+
+    private fun getQuadrant(dial: Dial): Quadrant {
+        if (dial.degree >= 0 && dial.degree < 90)
+            return Quadrant.Q1
+        else if (dial.degree >= 90 && dial.degree < 180)
+            return Quadrant.Q2
+        else if (dial.degree >= 180 && dial.degree < 270)
+            return Quadrant.Q3
+        else
+            return Quadrant.Q4
+    }
+
+    private class SimpleGestureListener : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            return true
+        }
+    }
+
+    private class ControlText {
+        var x = 0f
+        var y = 0f
+        set(value) {
+            field = value
+            field += textRect.height() / 2
+        }
+        var text = ""
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val textRect = Rect()
+    }
+
+    private class Dial(paint: Paint) {
+        var x = 0f
+        var y = 0f
+        var diameter = 0f
+        var radius = 0f
+        var degree = 0.0
+        set(value) {
+            if (value >= 720)
+                field = 0.0
+            else
+                field = value
+        }
+        val paint = paint
+    }
+
+    private class CenterTime(paint: Paint) {
+        var x = 0f
+        var y = 0f
+        var centerTime = ""
+        val paint = paint
+    }
+
+    data class Tick(val sx: Float, val sy: Float, val ex: Float, val ey: Float)
+    private class Ticks : Iterable<Tick> {
+        private val mTicks = ArrayList<Tick>(MAX_TICKS)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        init {
+            paint.style = Paint.Style.FILL
+            paint.strokeWidth = 5f
+        }
+
+        constructor(color: Int) {
+            paint.color = color
+        }
+
+        override fun iterator(): Iterator<Tick> {
+            return mTicks.iterator()
+        }
+
+        fun add(tick: Tick) {
+            mTicks.add(tick)
+        }
+
+        operator fun get(index: Int): Tick {
+            return mTicks[index]
+        }
+    }
+
+    data class Number(val num: String, val sx: Float, val sy: Float)
+    private class Numbers(paint: Paint) : Iterable<Number> {
+        private val mNumbers = ArrayList<Number>(MAX_TICKS)
+        val paint = paint
+
+        fun add(number: Number) {
+            mNumbers.add(number)
+        }
+
+        override fun iterator(): Iterator<Number> {
+            return mNumbers.iterator()
+        }
+
+        operator fun get(index: Int): Number {
+            return mNumbers[index]
+        }
+    }
+
+    private class ClockCircle {
+        var diameter: Float = 0f
+        var radius: Float = 0f
+        val paint: Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        init {
+            paint.style = Paint.Style.FILL
+        }
+
+        constructor(diameter: Float, color: Int) {
+            this.diameter = diameter
+            radius = diameter / 2
+            paint.color = color
+        }
     }
 }
